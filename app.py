@@ -24,7 +24,8 @@ VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "my_verify_token_123")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 # OpenAI Model ရွေးချယ်ခြင်း (gpt-4.1-mini, gpt-4.1-nano, gemini-2.5-flash)
-AI_MODEL = os.environ.get("AI_MODEL", "gpt-4.1-mini")
+# Fix: Read from MODEL_NAME to match Render environment variables
+AI_MODEL = os.environ.get("MODEL_NAME", os.environ.get("AI_MODEL", "llama-3.3-70b-versatile"))
 
 # System Prompt - Bot ရဲ့ အပြုအမူကို သတ်မှတ်ပေးတာ
 # ဒီနေရာမှာ သင့် business အတွက် customize လုပ်နိုင်ပါတယ်

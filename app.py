@@ -26,6 +26,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 # OpenAI Model ရွေးချယ်ခြင်း (gpt-4.1-mini, gpt-4.1-nano, gemini-2.5-flash)
 # Fix: Read from MODEL_NAME to match Render environment variables
 AI_MODEL = os.environ.get("MODEL_NAME", os.environ.get("AI_MODEL", "llama-3.3-70b-versatile"))
+PAGE_ID = os.environ.get("PAGE_ID", "")
 
 # System Prompt - Bot ရဲ့ အပြုအမူကို သတ်မှတ်ပေးတာ
 # ဒီနေရာမှာ သင့် business အတွက် customize လုပ်နိုင်ပါတယ်
@@ -219,13 +220,20 @@ def handle_webhook():
     if not body or body.get("object") != "page":
         return "Not Found", 404
 
-    # Process each entry
-    for entry in body.get("entry", []):
+       for entry in body.get("entry", []):
+        page_id = entry.get("id", "")
         for messaging_event in entry.get("messaging", []):
             sender_id = messaging_event.get("sender", {}).get("id")
 
             if not sender_id:
                 continue
+
+            # Admin/Page ကိုယ်တိုင် ပို့တဲ့ message ကို skip လုပ်ပါ
+            if sender_id == page_id or (PAGE_ID and sender_id == PAGE_ID):
+                logger.info(f"Skipping admin/page message from sender: {sender_id}")
+                continue
+
+            # Handle different event types
 
             # Handle different event types
             if "message" in messaging_event:

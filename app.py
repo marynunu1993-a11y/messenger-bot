@@ -12,24 +12,23 @@ Requirements:
 """
 
 import os
-import json
 import logging
 from flask import Flask, request, jsonify
 from openai import OpenAI
 
 # ===== Configuration =====
-# .env file ထဲမှာ ထည့်ထားတဲ့ environment variables တွေကို ဖတ်ပါတယ်
 PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN", "")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "my_verify_token_123")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
-# OpenAI Model ရွေးချယ်ခြင်း (gpt-4.1-mini, gpt-4.1-nano, gemini-2.5-flash)
-# Fix: Read from MODEL_NAME to match Render environment variables
+# Fix: Read model from MODEL_NAME env var (Render), fallback to llama-3.3-70b-versatile
 AI_MODEL = os.environ.get("MODEL_NAME", os.environ.get("AI_MODEL", "llama-3.3-70b-versatile"))
+
+# PAGE_ID — Facebook Page ရဲ့ ID (Render Environment Variables မှာ ထည့်ပေးပါ)
+# ဒါကို သုံးပြီး Page ကိုယ်တိုင် ပို့တဲ့ message ကို skip လုပ်ပါတယ်
 PAGE_ID = os.environ.get("PAGE_ID", "")
 
-# System Prompt - Bot ရဲ့ အပြုအမူကို သတ်မှတ်ပေးတာ
-# ဒီနေရာမှာ သင့် business အတွက် customize လုပ်နိုင်ပါတယ်
+# System Prompt — Bot ရဲ့ အပြုအမူ သတ်မှတ်ပေးတာ
 SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", """
 သင်သည် Facebook Page ၏ Customer Service Assistant ဖြစ်ပါသည်။
 ယဉ်ကျေးစွာ၊ အကူအညီပေးနိုင်စွာ ဖြေကြားပေးပါ။
@@ -38,11 +37,11 @@ English နဲ့ မေးရင် English နဲ့ ဖြေပါ။
 တိုတိုရှင်းရှင်း ဖြေပေးပါ။
 """.strip())
 
-# Facebook Graph API version
+# Facebook Graph API
 GRAPH_API_VERSION = "v21.0"
 GRAPH_API_URL = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
 
-# ===== Logging Setup =====
+# ===== Logging =====
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
@@ -61,37 +60,28 @@ else:
     logger.warning("OPENAI_API_KEY not set. AI replies will not work.")
 
 # ===== Conversation History (In-Memory) =====
-# Production မှာ Redis သို့မဟုတ် Database သုံးသင့်ပါတယ်
 conversation_history = {}
-MAX_HISTORY = 10  # conversation history ဘယ်နှစ်ခု သိမ်းမလဲ
+MAX_HISTORY = 10
 
 
 # ===== Helper Functions =====
 
-def get_ai_response(sender_id: str, user_message: str) -> str:
-    """
-    OpenAI API ကို သုံးပြီး AI response ရယူပါတယ်။
-    Conversation history ကိုလည်း ထည့်သွင်းစဉ်းစားပါတယ်။
-    """
+def get_ai_response(sender_id, user_message):
+    """AI response ရယူပါတယ်"""
     if not client:
-        return "⚠️ AI service is not configured. Please contact the page admin."
+        return "AI service is not configured. Please contact the page admin."
 
     try:
-        # Conversation history ရယူ
         if sender_id not in conversation_history:
             conversation_history[sender_id] = []
 
         history = conversation_history[sender_id]
-
-        # User message ကို history ထဲ ထည့်
         history.append({"role": "user", "content": user_message})
 
-        # History limit ထိန်းသိမ်း
         if len(history) > MAX_HISTORY * 2:
             history = history[-(MAX_HISTORY * 2):]
             conversation_history[sender_id] = history
 
-        # OpenAI API call
         messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
 
         response = client.chat.completions.create(
@@ -102,8 +92,6 @@ def get_ai_response(sender_id: str, user_message: str) -> str:
         )
 
         ai_reply = response.choices[0].message.content.strip()
-
-        # AI reply ကို history ထဲ ထည့်
         history.append({"role": "assistant", "content": ai_reply})
         conversation_history[sender_id] = history
 
@@ -115,12 +103,9 @@ def get_ai_response(sender_id: str, user_message: str) -> str:
         return "ခဏလေး စောင့်ပေးပါ။ Technical issue ရှိနေပါတယ်။ နောက်မှ ထပ်စမ်းကြည့်ပေးပါ။"
 
 
-def send_message(recipient_id: str, message_text: str) -> bool:
-    """
-    Facebook Send API ကို သုံးပြီး message ပြန်ပို့ပါတယ်။
-    Message ရှည်ရင် 2000 character စီ ခွဲပြီး ပို့ပါတယ်။
-    """
-    import requests
+def send_message(recipient_id, message_text):
+    """Facebook Send API ကို သုံးပြီး message ပြန်ပို့ပါတယ်"""
+    import requests as req
 
     if not PAGE_ACCESS_TOKEN:
         logger.error("PAGE_ACCESS_TOKEN is not set!")
@@ -129,26 +114,23 @@ def send_message(recipient_id: str, message_text: str) -> bool:
     url = f"{GRAPH_API_URL}/me/messages"
     params = {"access_token": PAGE_ACCESS_TOKEN}
 
-    # Facebook Messenger message limit: 2000 characters
     max_length = 2000
-    messages = [message_text[i:i + max_length]
-                for i in range(0, len(message_text), max_length)]
+    chunks = [message_text[i:i + max_length]
+              for i in range(0, len(message_text), max_length)]
 
     success = True
-    for msg in messages:
+    for chunk in chunks:
         payload = {
             "recipient": {"id": recipient_id},
-            "message": {"text": msg},
+            "message": {"text": chunk},
             "messaging_type": "RESPONSE"
         }
-
         try:
-            response = requests.post(url, params=params, json=payload)
+            response = req.post(url, params=params, json=payload)
             if response.status_code == 200:
                 logger.info(f"Message sent to {recipient_id}")
             else:
-                logger.error(
-                    f"Failed to send message: {response.status_code} - {response.text}")
+                logger.error(f"Failed to send: {response.status_code} - {response.text}")
                 success = False
         except Exception as e:
             logger.error(f"Error sending message: {str(e)}")
@@ -157,11 +139,9 @@ def send_message(recipient_id: str, message_text: str) -> bool:
     return success
 
 
-def send_typing_indicator(recipient_id: str, action: str = "typing_on"):
-    """
-    Typing indicator ပြပါတယ် (typing_on / typing_off)
-    """
-    import requests
+def send_typing_indicator(recipient_id, action="typing_on"):
+    """Typing indicator ပြပါတယ်"""
+    import requests as req
 
     if not PAGE_ACCESS_TOKEN:
         return
@@ -172,9 +152,8 @@ def send_typing_indicator(recipient_id: str, action: str = "typing_on"):
         "recipient": {"id": recipient_id},
         "sender_action": action
     }
-
     try:
-        requests.post(url, params=params, json=payload)
+        req.post(url, params=params, json=payload)
     except Exception as e:
         logger.error(f"Error sending typing indicator: {str(e)}")
 
@@ -183,7 +162,6 @@ def send_typing_indicator(recipient_id: str, action: str = "typing_on"):
 
 @app.route("/", methods=["GET"])
 def home():
-    """Health check endpoint"""
     return jsonify({
         "status": "running",
         "bot": "Facebook Messenger AI Auto Reply Bot",
@@ -193,10 +171,6 @@ def home():
 
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():
-    """
-    Meta Webhook Verification
-    Meta က webhook URL ကို verify လုပ်တဲ့အခါ GET request ပို့ပါတယ်။
-    """
     mode = request.args.get("hub.mode")
     token = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
@@ -211,78 +185,71 @@ def verify_webhook():
 
 @app.route("/webhook", methods=["POST"])
 def handle_webhook():
-    """
-    Meta Webhook Event Handler
-    Messenger ကနေ message လာတိုင်း ဒီ endpoint ကို POST request ပို့ပါတယ်။
-    """
     body = request.get_json()
 
     if not body or body.get("object") != "page":
         return "Not Found", 404
 
-       for entry in body.get("entry", []):
-        page_id = entry.get("id", "")
-        for messaging_event in entry.get("messaging", []):
-            sender_id = messaging_event.get("sender", {}).get("id")
+    for entry in body.get("entry", []):
+        # entry ထဲမှ page_id ရယူ — ဒါက Page ကိုယ်တိုင်ရဲ့ ID ဖြစ်ပါတယ်
+        entry_page_id = entry.get("id", "")
+
+        for event in entry.get("messaging", []):
+            sender_id = event.get("sender", {}).get("id", "")
+            recipient_id = event.get("recipient", {}).get("id", "")
 
             if not sender_id:
                 continue
 
-            # Admin/Page ကိုယ်တိုင် ပို့တဲ့ message ကို skip လုပ်ပါ
-            if sender_id == page_id or (PAGE_ID and sender_id == PAGE_ID):
-                logger.info(f"Skipping admin/page message from sender: {sender_id}")
+            # ===== ADMIN FILTER =====
+            # Facebook webhook မှာ:
+            # - Customer က message ပို့ရင်: sender = customer ID, recipient = page ID
+            # - Page/Admin က message ပို့ရင်: sender = page ID, recipient = customer ID
+            # ဒါကြောင့် sender_id က page ID နဲ့ တူရင် skip လုပ်ရပါတယ်
+            if sender_id == entry_page_id:
+                logger.info(f"Skipping message sent BY the page itself (sender={sender_id})")
                 continue
 
-            # Handle different event types
+            if PAGE_ID and sender_id == PAGE_ID:
+                logger.info(f"Skipping message from PAGE_ID admin (sender={sender_id})")
+                continue
 
-            # Handle different event types
-            if "message" in messaging_event:
-                handle_message(sender_id, messaging_event["message"])
-            elif "postback" in messaging_event:
-                handle_postback(sender_id, messaging_event["postback"])
+            # ===== CUSTOMER MESSAGE — AI ဖြေပေးမည် =====
+            logger.info(f"Customer message from {sender_id} to page {recipient_id}")
+
+            if "message" in event:
+                handle_message(sender_id, event["message"])
+            elif "postback" in event:
+                handle_postback(sender_id, event["postback"])
 
     return "EVENT_RECEIVED", 200
 
 
-def handle_message(sender_id: str, message: dict):
-    """
-    Message event handler
-    Text message ရော attachment ရော handle လုပ်ပါတယ်။
-    """
-    # Echo message (bot ကိုယ်တိုင် ပို့တဲ့ message) ကို skip
+def handle_message(sender_id, message):
+    # Bot ကိုယ်တိုင် ပို့တဲ့ echo message ကို skip
     if message.get("is_echo"):
+        logger.info(f"Skipping echo message for {sender_id}")
         return
 
-    # Typing indicator ပြ
     send_typing_indicator(sender_id, "typing_on")
 
     if "text" in message:
         user_text = message["text"]
-        logger.info(f"Received text from {sender_id}: {user_text}")
+        logger.info(f"Received text from customer {sender_id}: {user_text}")
 
-        # AI response ရယူ
         ai_reply = get_ai_response(sender_id, user_text)
-
-        # Reply ပို့
         send_message(sender_id, ai_reply)
 
     elif "attachments" in message:
-        # Attachment (ပုံ၊ video၊ file) လာရင်
         attachment_type = message["attachments"][0].get("type", "unknown")
-        logger.info(
-            f"Received {attachment_type} attachment from {sender_id}")
-
-        reply = f"ကျေးဇူးတင်ပါတယ်။ {attachment_type} ကို လက်ခံရရှိပါပြီ။ Text message နဲ့ မေးခွန်းမေးပေးပါ။"
+        logger.info(f"Received {attachment_type} attachment from {sender_id}")
+        reply = "ကျေးဇူးတင်ပါတယ်။ Text message နဲ့ မေးခွန်းမေးပေးပါ။"
         send_message(sender_id, reply)
 
-    # Typing off
     send_typing_indicator(sender_id, "typing_off")
 
 
-def handle_postback(sender_id: str, postback: dict):
-    """
-    Postback event handler (button click events)
-    """
+def handle_postback(sender_id, postback):
     payload = postback.get("payload", "")
     logger.info(f"Received postback from {sender_id}: {payload}")
 
@@ -296,7 +263,6 @@ def handle_postback(sender_id: str, postback: dict):
         )
         send_message(sender_id, welcome_msg)
     else:
-        # Other postbacks
         ai_reply = get_ai_response(sender_id, f"[Button clicked: {payload}]")
         send_message(sender_id, ai_reply)
 
